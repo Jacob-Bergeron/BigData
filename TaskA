@@ -1,0 +1,50 @@
+import java.io.IOException;
+import java.util.StringTokenizer;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class TaskA {
+
+    public static class TokenizerMapper
+            extends Mapper<Object, Text, Text, IntWritable> {
+        private final static IntWritable one = new IntWritable(1);
+        private Text word = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // Nationality is at index 2
+            if(valueString[2].equals("Greece")){
+                // We want to get name (index 1) and hobby (index 4)
+                String both = valueString[1] + ", " + valueString[4];
+                    // Just write out the name, hobby
+                    word.set(both);
+                    context.write(word, one);
+            }
+
+        }
+    }
+
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "TaskA");
+        job.setJarByClass(TaskA.class);
+        job.setMapperClass(TokenizerMapper.class);
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(IntWritable.class);
+        FileInputFormat.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/pages.csv"));
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskA"));
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
