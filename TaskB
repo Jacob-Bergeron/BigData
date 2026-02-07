@@ -1,5 +1,5 @@
 import java.io.IOException;
-import java.util.StringTokenizer;
+import java.util.*;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -9,52 +9,152 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 
 public class TaskB {
 
-    public static class TokenizerMapper
-            extends Mapper<Object, Text, Text, IntWritable> {
-        private final static IntWritable one = new IntWritable(1);
-        private Text word = new Text();
+    public static class PagesMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text pageID = new Text();
+        private Text data = new Text();
 
         public void map(Object key, Text value, Context context
         ) throws IOException, InterruptedException {
             // Gets entire row in array
             String[] valueString = value.toString().split(",");
 
-            // Skip header row
-            if (valueString[2].contains("WhatPage")){
-                return;
-            }
+            // For pages.csv, the pageID is at index 0
+            pageID.set(valueString[0]);
 
-            // WhatPage (aka id) is at Index 2
-            String pageID = valueString[2];
-            // Just write out the name, hobby
-            word.set(pageID);
-            context.write(word, one);
+            String name = valueString[1];
+            String nationality = valueString[2];
 
+            data.set("Name:" + name + ":" + nationality);
+
+            context.write(pageID, data);
         }
     }
 
 
-    public static class IntSumReducer
-            extends Reducer<Text, IntWritable, Text, IntWritable> {
-        private IntWritable result = new IntWritable();
+    public static class AccessLogsMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private final static Text one = new Text("1");
+        private Text pageID = new Text();
 
-        private int[] res = new int[10];
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
 
-        public void reduce(Text key, Iterable<IntWritable> values,
+            // WhatPage (aka id) is at Index 2
+            pageID.set(valueString[2]);
+
+            context.write(pageID, one);
+        }
+    }
+
+    public static class AccessCombiner extends Reducer<Text, Text, Text, Text> {
+        private Text result = new Text();
+
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+
+            int sum = 0;
+
+            for (Text val : values) {
+                String value = val.toString();
+                // Only sum if it's a number
+                if (!value.startsWith("Name:")) {
+                    sum += Integer.parseInt(value);
+                } else {
+                    // Pass through data unchanged
+                    context.write(key, val);
+                    return;
+                }
+            }
+
+            result.set(String.valueOf(sum));
+            context.write(key, result);
+        }
+    }
+
+
+    public static class TaskBReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        // Store page data: pageID -> [count, name, nationality]
+        private Map<String, String[]> pageData = new HashMap<>();
+
+        public void reduce(Text key, Iterable<Text> values,
                            Context context
         ) throws IOException, InterruptedException {
 
-            int sum = 0;
-            for (IntWritable val : values) {
-                sum += val.get();
+            int count = 0;
+            String name = null;
+            String nationality = null;
+
+            for (Text val : values) {
+                String value = val.toString();
+
+                if (value.startsWith("Name:")) {
+                    // Parse data
+                    String[] parts = value.substring(5).split(":", 2);
+                    name = parts[0];
+                    nationality = parts[1];
+                } else {
+                    // It's a count "1"
+                    count += Integer.parseInt(value);
+                }
             }
 
-            result.set(sum);
-            context.write(key, result);
+            // Store the data as [count, name, nationality]
+            String pageID = key.toString();
+            pageData.put(pageID, new String[]{String.valueOf(count), name, nationality});
+        }
+
+
+        protected void cleanup(Context context) throws IOException, InterruptedException {
+            // PriorityQueue - min-heap based on count (stored as string at index 0)
+            PriorityQueue<Map.Entry<String, String[]>> topPages = new PriorityQueue<>(10,
+                    Comparator.comparingInt(e -> Integer.parseInt(e.getValue()[0]))
+            );
+
+            // Find top 10
+            for (Map.Entry<String, String[]> entry : pageData.entrySet()) {
+                int count = Integer.parseInt(entry.getValue()[0]);
+
+                if (topPages.size() < 10) {
+                    topPages.add(entry);
+                } else {
+                    int minCount = Integer.parseInt(topPages.peek().getValue()[0]);
+                    if (count > minCount) {
+                        topPages.poll();  // Remove smallest
+                        topPages.add(entry);
+                    }
+                }
+            }
+
+            // Convert to array and reverse for descending order
+            Map.Entry<String, String[]>[] results = new Map.Entry[topPages.size()];
+            int i = topPages.size() - 1;
+            while (!topPages.isEmpty()) {
+                results[i--] = topPages.poll();
+            }
+
+            // Output top 10
+            for (Map.Entry<String, String[]> entry : results) {
+                if (entry != null) {
+                    String pageID = entry.getKey();
+                    String[] data = entry.getValue();
+                    String output = "Id: " + pageID +
+                            ", Name: " + data[1] +
+                            ", Nationality: " + data[2] +
+                            ", Accesses: " + data[0];
+                    context.write(new Text(pageID), new Text(output));
+                }
+            }
         }
     }
 
@@ -64,12 +164,20 @@ public class TaskB {
         Configuration conf = new Configuration();
         Job job = Job.getInstance(conf, "TaskB");
         job.setJarByClass(TaskB.class);
-        job.setMapperClass(TaskB.TokenizerMapper.class);
-        // job.setCombinerClass(IntSumReducer.class);
-        job.setReducerClass(IntSumReducer.class);
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(Text.class);
+
+        job.setNumReduceTasks(1);
+
+        job.setCombinerClass(AccessCombiner.class);
+        job.setReducerClass(TaskBReducer.class);
         job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(IntWritable.class);
-        FileInputFormat.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/access_logs.csv"));
+
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/pages.csv"),
+                TextInputFormat.class, TaskB.PagesMapper.class);
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/access_logs.csv"),
+                TextInputFormat.class, TaskB.AccessLogsMapper.class);
         FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskB"));
         System.exit(job.waitForCompletion(true) ? 0 : 1);
     }
