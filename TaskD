@@ -1,0 +1,138 @@
+import java.io.IOException;
+import java.util.StringTokenizer;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class TaskD {
+
+    public static class FriendsMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text word = new Text();
+        private Text flag = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // friendID is at index 2
+            String fID = valueString[2];
+
+            // Write the friendID : "F:"
+            word.set(fID);
+            // F to know this tuple came from friends table
+            flag.set("F:");
+            context.write(word,flag);
+
+        }
+    }
+
+    public static class PagesMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text word = new Text();
+        private Text name = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // personID is at index 0
+            String pID = valueString[0];
+
+            String personName = valueString[1];
+
+            // Write the personID : "P: + name"
+            word.set(pID);
+            name.set("P:" + personName);
+            context.write(word, name);
+
+        }
+    }
+
+    public static class TaskDCombiner
+            extends Reducer<Text, Text, Text, Text> {
+        private Text result = new Text();
+
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            int sum = 0;
+
+            for (Text val : values) {
+                String value = val.toString();
+
+                if (value.startsWith("P:")) {
+                    // Pass through name unchanged
+                    context.write(key, val);
+                } else {
+                    // It's a count - sum it up
+                    sum += Integer.parseInt(value);
+                }
+            }
+
+            // Output the aggregated count if we found any
+            if (sum > 0) {
+                result.set(String.valueOf(sum));
+                context.write(key, result);
+            }
+        }
+    }
+
+    public static class TaskDReducer
+            extends Reducer<Text, Text, Text, Text> {
+        private Text result = new Text();
+        private Text name = new Text();
+
+        public void reduce(Text key, Iterable<Text> values,
+                           Context context
+        ) throws IOException, InterruptedException {
+            int count = 0;
+            String personName = null;
+
+            for (Text val : values) {
+                String value = val.toString();
+                // check if it comes from friends.csv
+                if (value.equals("F:")) {
+                    count++;
+                } else if (value.startsWith("P:")) { // else it comes from pages.csv
+                    // get the name after "P:"
+                    personName = value.substring(2);
+                }
+            }
+
+            result.set(String.valueOf(count));
+            name.set(personName);
+            context.write(name, result);
+        }
+    }
+
+
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "TaskD");
+        job.setJarByClass(TaskD.class);
+        job.setCombinerClass(TaskDCombiner.class);
+        job.setReducerClass(TaskDReducer.class);
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/friends.csv"),
+                TextInputFormat.class, FriendsMapper.class);
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/pages.csv"),
+                TextInputFormat.class, PagesMapper.class);
+
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskD"));
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
