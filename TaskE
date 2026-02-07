@@ -1,0 +1,84 @@
+import java.io.IOException;
+import java.util.Set;
+import java.util.StringTokenizer;
+import java.util.HashSet;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class TaskE {
+
+    public static class MapperA
+            extends Mapper<Object, Text, Text, Text> {
+        private Text pID = new Text();
+        private Text pageID = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // Get the ByWho column [1]
+            pID.set(valueString[1]);
+
+            // Get the WhatPage column [2]
+            pageID.set(valueString[2]);
+
+            context.write(pID, pageID);
+
+        }
+    }
+
+
+
+    public static class TaskEReducer
+            extends Reducer<Text, Text, Text, Text> {
+        private Text result = new Text();
+
+        public void reduce(Text key, Iterable<Text> values,
+                           Context context
+        ) throws IOException, InterruptedException {
+            HashSet<Text> s = new HashSet<>();
+            int count = 0;
+            String myString = null;
+
+            for (Text val : values) {
+                // if the value is already in map
+                if(s.contains(val)){
+                    count++; // just increment count
+                }else{
+                    // add it to set AND increment count
+                    s.add(val);
+                    count++;
+                }
+            }
+
+            myString = "Total: " + count + " Distinct: " + s.size();
+            result.set(myString);
+            context.write(key, result);
+        }
+    }
+
+
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "TaskE");
+        job.setJarByClass(TaskE.class);
+        job.setMapperClass(TaskE.MapperA.class);
+        job.setReducerClass(TaskEReducer.class);
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+        FileInputFormat.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/access_logs.csv"));
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskE"));
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
