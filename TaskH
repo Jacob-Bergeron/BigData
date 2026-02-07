@@ -1,0 +1,161 @@
+import java.io.IOException;
+import java.util.StringTokenizer;
+import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.*;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import java.util.HashMap;
+import java.util.Map;
+
+
+public class TaskH {
+
+    public static class FriendsMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text personID = new Text();
+        private final static Text one = new Text("1");
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Get entire row
+            String[] valueString = value.toString().split(",");
+
+            // PersonID is at index 1
+            personID.set(valueString[1]);
+
+            context.write(personID, one);
+        }
+    }
+
+    public static class PagesMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text personID = new Text();
+        private final static Text name = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Get entire row
+            String[] valueString = value.toString().split(",");
+
+            // PersonID is at index 0
+            personID.set(valueString[0]);
+
+            // Name is at index 1
+            name.set("P:"+valueString[1]);
+
+            context.write(personID,name);
+        }
+    }
+
+
+    public static class TaskHCombiner extends Reducer<Text, Text, Text, Text> {
+        private Text result = new Text();
+
+        public void reduce(Text key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+            int sum = 0;
+
+            for (Text val : values) {
+                String value = val.toString();
+
+                if (value.startsWith("P:")) {
+                    // Pass through data unchanged
+                    context.write(key, val);
+                } else {
+                    // It's a count - sum it
+                    sum += Integer.parseInt(value);
+                }
+            }
+
+            if (sum > 0) {
+                result.set(String.valueOf(sum));
+                context.write(key, result);
+            }
+        }
+    }
+
+    public static class TaskHReducer
+            extends Reducer<Text, Text, Text, Text> {
+        private Map<String, String[]> data = new HashMap<>();
+
+        public void reduce(Text key, Iterable<Text> values,
+                           Context context
+        ) throws IOException, InterruptedException {
+            int friendCount = 0;
+            String name = null;
+
+            for (Text val : values) {
+                String value = val.toString();
+
+                if (value.startsWith("P:")) {
+                    name = value.substring(2);
+                } else {
+                    friendCount += Integer.parseInt(value);
+                }
+            }
+
+            String personID = key.toString();
+            data.put(personID, new String[]{String.valueOf(friendCount), name,});
+        }
+
+        protected void cleanup(Context context) throws IOException, InterruptedException{
+            // Calculate average
+            int totalFriendships = 0;
+            int totalPeople = data.size();
+
+            for (String[] d : data.values()) {
+                totalFriendships += Integer.parseInt(d[0]);
+            }
+
+            double average = totalPeople > 0 ? (double) totalFriendships / totalPeople : 0;
+
+            // Output people above average
+            for (Map.Entry<String, String[]> entry : data.entrySet()) {
+                String personID = entry.getKey();
+                String[] d = entry.getValue();
+                int friendCount = Integer.parseInt(d[0]);
+
+                if (friendCount > average) {
+                    String output = "Name: " + d[1] +
+                            ", Friends: " + friendCount +
+                            " (Average: " + String.format("%.2f", average) + ")";
+                    context.write(new Text(personID), new Text(output));
+                }
+            }
+        }
+    }
+
+
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "TaskH");
+        job.setJarByClass(TaskH.class);
+        job.setReducerClass(TaskHReducer.class);
+        job.setCombinerClass(TaskHCombiner.class);
+
+        job.setNumReduceTasks(1);
+
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(Text.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/friends.csv"),
+                TextInputFormat.class, TaskH.FriendsMapper.class);
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/pages.csv"),
+                TextInputFormat.class, TaskH.PagesMapper.class);
+
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskH"));
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
