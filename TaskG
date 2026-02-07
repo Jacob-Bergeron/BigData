@@ -1,0 +1,142 @@
+package org.example;
+
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileSplit;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class TaskG {
+
+    // 14 days in minutes
+    private static final long FOURTEEN_DAYS_MINUTES = 14L * 24L * 60L;
+
+    public static class TokenizerMapper
+            extends Mapper<Object, Text, IntWritable, Text> {
+        private IntWritable personId = new IntWritable();
+        private Text taggedValue = new Text();
+        private boolean isAccessLog;
+
+        protected void setup(Context context) {
+            FileSplit split = (FileSplit) context.getInputSplit();
+            String filename = split.getPath().getName().toLowerCase();
+            // assumes access log filename contains "access"
+            isAccessLog = filename.contains("access");
+        }
+
+        public void map(Object key, Text value, Context context)
+                throws IOException, InterruptedException {
+
+            String[] fields = value.toString().split(",", -1);
+
+            if (isAccessLog) {
+                // AccessLog: AccessId, ByWho, WhatPage, TypeOfAccess, AccessTime
+                if (fields.length < 5) return;
+
+                try {
+                    int byWho = Integer.parseInt(fields[1].trim());
+
+                    // Example: "2024-11-07 01:53:38"
+                    String timeStr = fields[4].trim();
+                    LocalDateTime dt = LocalDateTime.parse(timeStr.replace(" ", "T"));
+                    long epochMinutes = dt.toEpochSecond(ZoneOffset.UTC) / 60L;
+
+                    personId.set(byWho);
+                    taggedValue.set("A|" + epochMinutes);
+                    context.write(personId, taggedValue);
+                } catch (Exception ignored) {
+                    // skip bad lines
+                }
+
+            } else {
+                // MyPage: ID, Name, Nationality, CountryCode, Hobby
+                if (fields.length < 2) return;
+
+                try {
+                    int id = Integer.parseInt(fields[0].trim());
+                    String name = fields[1].trim();
+
+                    personId.set(id);
+                    taggedValue.set("P|" + name);
+                    context.write(personId, taggedValue);
+                } catch (Exception ignored) {
+                    // skip bad lines
+                }
+            }
+        }
+    }
+
+    public static class DisconnectedReducer
+            extends Reducer<IntWritable, Text, IntWritable, Text> {
+
+        private long cutoffEpochMinutes;
+
+        protected void setup(Context context) {
+            long latestEpochMinutes = context.getConfiguration().getLong("latestEpochMinutes", 0L);
+            cutoffEpochMinutes = latestEpochMinutes - FOURTEEN_DAYS_MINUTES;
+        }
+
+        public void reduce(IntWritable key, Iterable<Text> values, Context context)
+                throws IOException, InterruptedException {
+
+            String name = null;
+            long lastAccess = Long.MIN_VALUE;
+
+            for (Text t : values) {
+                String s = t.toString();
+                if (s.startsWith("P|")) {
+                    name = s.substring(2);
+                } else if (s.startsWith("A|")) {
+                    try {
+                        long time = Long.parseLong(s.substring(2).trim());
+                        lastAccess = Math.max(lastAccess, time);
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // Must be a real page owner
+            if (name == null) return;
+
+            // Disconnected if never accessed OR last access older than cutoff
+            if (lastAccess <= cutoffEpochMinutes) {
+                context.write(key, new Text(name));
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        //Most recent AccessTime in AccessLog sample: 2024-11-07 01:53:38
+        long latestEpochMinutes = LocalDateTime.parse("2024-11-07T01:53:38")
+                .toEpochSecond(ZoneOffset.UTC) / 60L;
+
+        Configuration conf = new Configuration();
+        conf.setLong("latestEpochMinutes", latestEpochMinutes);
+
+        Job job = Job.getInstance(conf, "TaskG");
+        job.setJarByClass(TaskG.class);
+
+        job.setMapperClass(TokenizerMapper.class);
+        job.setReducerClass(DisconnectedReducer.class);
+
+        job.setMapOutputKeyClass(IntWritable.class);
+        job.setMapOutputValueClass(Text.class);
+
+        job.setOutputKeyClass(IntWritable.class);
+        job.setOutputValueClass(Text.class);
+
+        FileInputFormat.addInputPath(job, new Path("file:///Users/mariana/Desktop/BigData/Project1_big/input/pages.txt"));
+        FileInputFormat.addInputPath(job, new Path("file:///Users/mariana/Desktop/BigData/Project1_big/input/access_logs.txt"));
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/mariana/Desktop/BigData/Project1_big/output/output_taskG"));
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
