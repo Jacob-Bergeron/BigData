@@ -1,0 +1,142 @@
+import java.io.IOException;
+import java.util.Set;
+import java.util.StringTokenizer;
+import java.util.HashSet;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.MultipleInputs;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+public class TaskF {
+
+    public static class FriendsMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text personID = new Text();
+        private Text friendID = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // PersonID is at index 1
+            personID.set(valueString[1]);
+
+            // FriendID is at index 2
+            // "F:" to flag it came from friends.csv
+            friendID.set("F:" + valueString[2]);
+
+            context.write(personID, friendID);
+        }
+    }
+
+    public static class AccessLogsMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text byWho = new Text();
+        private Text whatPage = new Text();
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // PersonID is at index 1
+            byWho.set(valueString[1]);
+
+            // FriendID is at index 2
+            // "AC:" to flag it came from access logs
+            whatPage.set("AC:" +  valueString[2]);
+
+            context.write(byWho, whatPage);
+        }
+    }
+
+
+    public static class PagesMapper
+            extends Mapper<Object, Text, Text, Text> {
+        private Text personID = new Text();
+        private Text name = new Text();
+
+
+        public void map(Object key, Text value, Context context
+        ) throws IOException, InterruptedException {
+            // Gets entire row in array
+            String[] valueString = value.toString().split(",");
+
+            // PersonID is at index 0
+            personID.set(valueString[0]);
+
+            // name is at index 1
+            // "P:" to flag it came from pages
+            name.set("P:" +  valueString[1]);
+
+            context.write(personID, name);
+        }
+    }
+
+
+    public static class TaskFReducer
+            extends Reducer<Text, Text, Text, Text> {
+
+        public void reduce(Text key, Iterable<Text> values,
+                           Context context
+        ) throws IOException, InterruptedException {
+
+            // For each person, collect:
+            Set<String> friends = new HashSet<>();
+            Set<String> pagesAccessed = new HashSet<>();
+            String personName = null;
+
+            for (Text val : values) {
+                String value = val.toString();
+                if (value.startsWith("F:")) {
+                    friends.add(value.substring(2));
+                } else if (value.startsWith("AC:")) {
+                    pagesAccessed.add(value.substring(3));
+                } else if (value.startsWith("P:")) {
+                    personName = value.substring(2);
+                }
+            }
+
+            // Find friends whose pages were NEVER accessed
+            for (String friendID : friends) {
+                // if the accessed set doesn't have the friendID
+                if (!pagesAccessed.contains(friendID)) {
+                    // Then we know the person never accessed their page
+                    context.write(new Text(key + " " + personName), new Text("Never accessed friend: " + friendID));
+                }
+            }
+
+        }
+    }
+
+
+
+    public static void main(String[] args) throws Exception {
+        Configuration conf = new Configuration();
+        Job job = Job.getInstance(conf, "TaskF");
+        job.setJarByClass(TaskF.class);
+
+        job.setReducerClass(TaskFReducer.class);
+
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/friends.csv"),
+                TextInputFormat.class, TaskF.FriendsMapper.class);
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/access_logs.csv"),
+                TextInputFormat.class, TaskF.AccessLogsMapper.class);
+        MultipleInputs.addInputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/input/pages.csv"),
+                TextInputFormat.class, PagesMapper.class);
+
+        FileOutputFormat.setOutputPath(job, new Path("file:///Users/jacobbergeron/Downloads/Academic Year 25-26/C25-26/CS4433/Project1/output/output-taskF"));
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
